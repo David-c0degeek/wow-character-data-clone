@@ -6,6 +6,8 @@ param(
     # Extras
     [switch]$BackupTarget,
     [switch]$AlsoCopyAccountWide,
+    [switch]$ForceWipeTarget,   # delete target toon folder before copy (after backup)
+    [switch]$DisableSync,       # disable Blizzard settings sync in config-cache.wtf
     [switch]$DryRun,
     [switch]$VerboseAccounts
 )
@@ -61,7 +63,6 @@ function Pick-FromList {
         if ($raw -eq '' ) { continue }
         if ($raw -match '^[qQ]$') { throw "Cancelled by user." }
 
-        # robust numeric parse
         $idx = 0
         if (-not [int]::TryParse($raw, [ref]$idx)) { Write-Host "Please enter a number between 1 and $($Options.Count)."; continue }
         if ($idx -lt 1 -or $idx -gt $Options.Count) { Write-Host "Out of range."; continue }
@@ -70,11 +71,24 @@ function Pick-FromList {
     }
 }
 
-# Clear screen before each picker for clarity
-function Pick {
-    param([string]$Title,[array]$Options,[string]$LabelProp)
-    Clear-Host
-    return Pick-FromList -Title $Title -Options $Options -LabelProp $LabelProp
+function Pick { param([string]$Title,[array]$Options,[string]$LabelProp) Clear-Host; Pick-FromList -Title $Title -Options $Options -LabelProp $LabelProp }
+
+# Flip Blizzard cloud-sync CVars to off in a given scope (account or realm folder that has config-cache.wtf)
+function Disable-SettingsSync {
+    param([Parameter(Mandatory)][string]$ScopePath)
+    $configFile = Join-Path $ScopePath "config-cache.wtf"
+    if (-not (Test-Path $configFile)) { return }
+    $txt = Get-Content $configFile -Raw
+    $ensure = {
+        param($t,$key)
+        if ($t -match "(?m)^SET\s+$key\s+""\d+""") { return ($t -replace "(?m)^SET\s+$key\s+""\d+""","SET $key ""0""") }
+        else { return ($t.TrimEnd() + "`r`nSET $key ""0""`r`n") }
+    }
+    $txt = & $ensure $txt "synchronizeSettings"
+    $txt = & $ensure $txt "synchronizeBindings"
+    $txt = & $ensure $txt "synchronizeMacros"
+    if (-not $DryRun) { Set-Content -Path $configFile -Value $txt -Encoding ASCII }
+    Write-Host "Disabled settings sync in: $configFile"
 }
 
 # ---------- Auto-detect WoW branch ----------
@@ -92,7 +106,6 @@ $AccountsRoot = Resolve-PathSafe (Join-Path $WtfRoot "Account")
 if (-not (Test-Path $AccountsRoot)) { throw "Not found: $AccountsRoot  (Check WowRoot / install.)" }
 
 # ---------- Accounts list (filter junk) ----------
-# Keep folders that look like WoW license IDs (e.g., 53135513#1) and ignore 'SavedVariables'
 $accountDirs = Get-ChildItem -Path $AccountsRoot -Directory | Where-Object {
     $_.Name -ne "SavedVariables" -and ($_.Name -match '^\d+(#\d+)?$' -or $_.Name -match '#')
 }
@@ -181,6 +194,17 @@ if (-not (Test-Path $tgtCharPath)) {
     if (-not $DryRun) { New-Item -ItemType Directory -Path $tgtCharPath | Out-Null }
 }
 
+# Optional: disable Blizzard settings sync on relevant scopes
+if ($DisableSync) {
+    Disable-SettingsSync -ScopePath $srcAccObj.Path
+    Disable-SettingsSync -ScopePath $tgtAccObj.Path
+    # These realm folders can also contain config-cache.wtf (depends on branch/version)
+    $srcRealmPath = Join-Path $srcAccObj.Path $srcRealm
+    $tgtRealmPath = Join-Path $tgtAccObj.Path $tgtRealm
+    if (Test-Path $srcRealmPath) { Disable-SettingsSync -ScopePath $srcRealmPath }
+    if (Test-Path $tgtRealmPath) { Disable-SettingsSync -ScopePath $tgtRealmPath }
+}
+
 # Optional backup
 if ($BackupTarget -and (Test-Path $tgtCharPath) -and (Get-ChildItem -Path $tgtCharPath -Force | Where-Object { -not $_.PSIsContainer -or (Get-ChildItem $_.FullName -ErrorAction SilentlyContinue) })) {
     $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -195,16 +219,23 @@ if ($BackupTarget -and (Test-Path $tgtCharPath) -and (Get-ChildItem -Path $tgtCh
     }
 }
 
+# Optional: wipe target toon folder to avoid timestamp/partial-file issues
+if ($ForceWipeTarget -and (Test-Path $tgtCharPath) -and -not $DryRun) {
+    Write-Host "Force wiping target character folder: $tgtCharPath"
+    Remove-Item -Path $tgtCharPath -Recurse -Force
+    New-Item -ItemType Directory -Path $tgtCharPath | Out-Null
+}
+
 # ---------- Copy per-character ----------
 Write-Host "Cloning per-character settings..."
 if ($DryRun) {
     Write-Host "[DryRun] Would copy (robocopy) $srcCharPath -> $tgtCharPath"
 } else {
-    # /E recurse incl. empty dirs, /XO skip older, quiet logs
-    robocopy $srcCharPath $tgtCharPath /E /XO /NFL /NDL /NJH /NJS /NP | Out-Null
+    # overwrite everything, recurse incl. empty dirs, quiet logs
+    robocopy $srcCharPath $tgtCharPath /E /NFL /NDL /NJH /NJS /NP | Out-Null
 }
 
-# Ensure key files present
+# Ensure key files present (belt-and-suspenders)
 $perCharItems = @(
     "bindings-cache.wtf","macros-cache.txt","chat-cache.txt",
     "config-cache.wtf","layout-local.txt","AddOns.txt","SavedVariables"
@@ -215,7 +246,7 @@ foreach ($item in $perCharItems) {
     if (Test-Path $src) {
         if ($DryRun) { Write-Host "[DryRun] Ensure copy: $src -> $dst" }
         else {
-            if (Test-Path $src -PathType Container) { robocopy $src $dst /E /XO /NFL /NDL /NJH /NJS /NP | Out-Null }
+            if (Test-Path $src -PathType Container) { robocopy $src $dst /E /NFL /NDL /NJH /NJS /NP | Out-Null }
             else { Copy-Item -Path $src -Destination $dst -Force }
         }
     }
@@ -242,7 +273,7 @@ if ($AlsoCopyAccountWide) {
         }
         if (Test-Path $srcAccSV) {
             if ($DryRun) { Write-Host "[DryRun] Copy global SavedVariables: $srcAccSV -> $tgtAccSV" }
-            else { robocopy $srcAccSV $tgtAccSV /E /XO /NFL /NDL /NJH /NJS /NP | Out-Null }
+            else { robocopy $srcAccSV $tgtAccSV /E /NFL /NDL /NJH /NJS /NP | Out-Null }
         }
     } else {
         Write-Host "Skipped account-wide copy."
@@ -250,5 +281,6 @@ if ($AlsoCopyAccountWide) {
 }
 
 Write-Host "`nDone."
-Write-Host "Per-character: WTF\\Account\\<Account>\\<Realm>\\<Char>\\bindings-cache.wtf (and SavedVariables)"
+Write-Host "Per-character: WTF\\Account\\<Account>\\<Realm>\\<Char>\\(bindings-cache.wtf, SavedVariables, etc.)"
 Write-Host "Account-wide:  WTF\\Account\\<Account>\\bindings-cache.wtf | macros-cache.txt | SavedVariables\\*.lua"
+Write-Host "Tip: After first login, match 'Character Specific Key Bindings' to the source, and select addon profiles if needed."
