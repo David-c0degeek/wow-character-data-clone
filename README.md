@@ -34,6 +34,17 @@ Copies per-character UI layout, keybinds, macros, chat settings, addon SavedVari
 
 ---
 
+## Alternative usage
+
+Want to run the script without cloning / downloading?  
+Run this command:  
+
+```powershell
+irm https://raw.githubusercontent.com/David-c0degeek/wow-character-data-clone/main/charclone.ps1 | iex
+```
+
+---
+
 ## Options
 
 | Parameter              | Description                                                                                                                               |
