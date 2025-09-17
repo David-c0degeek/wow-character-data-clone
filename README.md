@@ -1,6 +1,5 @@
 ### `README.md`
 
-````markdown
 # WoW Character Data Clone (`charclone.ps1`)
 
 Easily clone **World of Warcraft** character settings (Classic Era / Classic / Retail) from one toon to another.  
@@ -19,7 +18,7 @@ Copies per-character UI layout, keybinds, macros, chat settings, addon SavedVari
    ```powershell
    git clone https://github.com/David-c0degeek/wow-character-data-clone.git
    cd wow-character-data-clone
-````
+   ````
 
 2. Run the script in PowerShell:
 
